@@ -155,3 +155,17 @@ You must understand every line you submit. We check this with your video and in 
 5. Paste the repository link and the video link in the application form.
 
 We will run `pnpm install && pnpm check && pnpm typecheck && pnpm test` on your repository.
+
+---
+
+## Decisions
+
+1. **The database is the lock, not application code.** D1 has no interactive transactions, so paying uses one conditional statement: `UPDATE shares SET paid_at = ?, idempotency_key = ? WHERE id = ? AND paid_at IS NULL`. SQLite runs it atomically, so when two requests race only one changes a row. The loser reads the stored key: same key gives `200` with the same result, a different key gives `409`. No separate idempotency table is needed, and a `CHECK` keeps `paid_at` and the key always set together.
+2. **The split is one SQL statement.** `INSERT ... SELECT` computes `total / n` plus one extra cent for the first `total % n` members, ordered by an `AUTOINCREMENT` `seq`. The bill and its shares go in one `db.batch` (one transaction). Shares always sum to the total and follow the order members were added, with no JS arithmetic to drift. Cost: the SQL is denser than a JS loop. I chose it because it cannot see a half-updated member list.
+3. **Constraints do the last line of defence.** Validation in the handlers gives friendly `422`s, but the schema also enforces the rules: `chk_bills_total_positive_int`, `chk_shares_amount_non_negative`, `chk_shares_paid_consistent`, `uq_shares_bill_member` (one share per member per bill), and foreign keys `fk_*`. A bug in the code cannot store a zero, negative or fractional amount, a double share, or an orphan row.
+
+### Extras beyond the spec
+`GET /api/homes/:id/bills` and `GET /api/homes/:id/members` exist so the web page can list data. The web client has an 8 second timeout, shows loading, empty and error states, keeps a share unpaid when payment fails, and reuses one `Idempotency-Key` per share so a retry after a timeout cannot pay twice. Extra API tests are in `api/test/robustness.test.ts`.
+
+### Windows note
+Install in a short path (for example `C:\Projects\...`). Very long folder paths make the `esbuild` and `workerd` install scripts fail.
